@@ -67,9 +67,15 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.StringReader;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -92,6 +98,9 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     private static final Color ORANGE = new Color(255, 149, 0);
     private static final Color RED = new Color(255, 69, 58);
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final String APP_VERSION = "1.0.0";
+    private static final String UPDATE_INFO_URL = "https://raw.githubusercontent.com/MGHYGitHub/Auto-clicker/main/version.properties";
+    private static final HttpClient UPDATE_HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
     private final Path appDirectory = Path.of(System.getProperty("user.home"), ".clickflow");
     private final Path defaultConfigFile = appDirectory.resolve("config.properties");
@@ -1125,7 +1134,59 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     }
 
     private void checkForUpdates() {
-        showMacMessage("检查更新", "当前为本地版本，尚未配置在线更新服务。");
+        statusLabel.setText("正在检查更新...");
+        HttpRequest request = HttpRequest.newBuilder(URI.create(UPDATE_INFO_URL + "?t=" + System.currentTimeMillis()))
+                .timeout(Duration.ofSeconds(8))
+                .header("Accept", "text/plain")
+                .GET()
+                .build();
+        UPDATE_HTTP_CLIENT.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                .whenComplete((response, failure) -> SwingUtilities.invokeLater(() -> handleUpdateResponse(response, failure)));
+    }
+
+    private void handleUpdateResponse(HttpResponse<String> response, Throwable failure) {
+        if (failure != null) {
+            statusLabel.setText("检查更新失败");
+            showMacMessage("检查更新失败", "无法连接更新服务器，请检查网络后重试。\n" + failure.getMessage());
+            return;
+        }
+        if (response.statusCode() != 200) {
+            statusLabel.setText("检查更新失败");
+            showMacMessage("检查更新失败", "更新服务器返回 HTTP " + response.statusCode() + "。");
+            return;
+        }
+        Properties remote = new Properties();
+        try {
+            remote.load(new StringReader(response.body()));
+            String remoteVersion = remote.getProperty("version", "").trim();
+            if (!remoteVersion.matches("\\d+(\\.\\d+)*")) throw new IllegalArgumentException("版本文件中的 version 格式无效");
+            if (!isNewerVersion(remoteVersion, APP_VERSION)) {
+                statusLabel.setText("当前已是最新版本 " + APP_VERSION);
+                showMacMessage("检查更新", "当前已是最新版本：" + APP_VERSION);
+                return;
+            }
+            String notes = remote.getProperty("notes", "暂无更新说明").trim();
+            String downloadUrl = remote.getProperty("downloadUrl", "https://github.com/MGHYGitHub/Auto-clicker/releases/latest").trim();
+            statusLabel.setText("发现新版本 " + remoteVersion);
+            if (showMacYesNo("发现新版本", "当前版本：" + APP_VERSION + "\n最新版本：" + remoteVersion + "\n\n" + notes + "\n\n是否打开下载页面？")) {
+                if (Desktop.isDesktopSupported()) Desktop.getDesktop().browse(URI.create(downloadUrl));
+                else showMacMessage("无法打开下载页", "当前系统不支持直接打开浏览器。\n" + downloadUrl);
+            }
+        } catch (Exception exception) {
+            statusLabel.setText("检查更新失败");
+            showMacMessage("检查更新失败", exception.getMessage());
+        }
+    }
+
+    private boolean isNewerVersion(String remote, String local) {
+        String[] remoteParts = remote.split("\\.");
+        String[] localParts = local.split("\\.");
+        for (int i = 0; i < Math.max(remoteParts.length, localParts.length); i++) {
+            int remoteNumber = i < remoteParts.length ? Integer.parseInt(remoteParts[i]) : 0;
+            int localNumber = i < localParts.length ? Integer.parseInt(localParts[i]) : 0;
+            if (remoteNumber != localNumber) return remoteNumber > localNumber;
+        }
+        return false;
     }
 
     private void saveConfiguration(Path file) throws IOException {
