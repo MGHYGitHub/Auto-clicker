@@ -33,6 +33,7 @@ import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.Timer;
 import javax.swing.filechooser.FileNameExtensionFilter;
+import javax.swing.plaf.basic.BasicComboBoxUI;
 import java.awt.AWTException;
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -130,6 +131,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         super("ClickFlow · 自动化连点器");
         robot = new Robot();
         robot.setAutoDelay(0);
+        setUndecorated(true);
         loadConfiguration(defaultConfigFile, false);
         createInterface();
         setIconImage(loadAppIcon());
@@ -149,6 +151,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
 
         JPanel header = new JPanel(new BorderLayout(0, 4));
         header.setOpaque(false);
+        header.setBorder(BorderFactory.createEmptyBorder(0, 0, 4, 0));
         JLabel title = new JLabel("ClickFlow");
         title.setForeground(TEXT);
         title.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 30));
@@ -158,7 +161,10 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         JPanel titleRow = new JPanel(new BorderLayout());
         titleRow.setOpaque(false);
         titleRow.add(title, BorderLayout.WEST);
-        titleRow.add(new TrafficLightPanel(), BorderLayout.EAST);
+        titleRow.add(new MacWindowControls(), BorderLayout.EAST);
+        DragWindowAdapter dragAdapter = new DragWindowAdapter();
+        titleRow.addMouseListener(dragAdapter);
+        titleRow.addMouseMotionListener(dragAdapter);
         header.add(titleRow, BorderLayout.NORTH);
         header.add(subtitle, BorderLayout.SOUTH);
         content.add(header, BorderLayout.NORTH);
@@ -206,7 +212,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         JPanel recordingCard = new RoundPanel(new Color(255, 255, 255, 180), 18);
         recordingCard.setLayout(new BorderLayout(10, 0));
         recordingCard.setBorder(BorderFactory.createEmptyBorder(10, 12, 10, 12));
-        JLabel recordingTitle = new JLabel("鼠标录制");
+        JLabel recordingTitle = new JLabel("鼠标录制 · F7");
         recordingTitle.setForeground(TEXT);
         recordingTitle.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 14));
         recordingCard.add(recordingTitle, BorderLayout.WEST);
@@ -238,6 +244,9 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         modeLabel.setForeground(SUBTLE_TEXT);
         modePanel.add(modeLabel);
         taskModeBox.setFont(new Font("Microsoft YaHei UI", Font.PLAIN, 13));
+        taskModeBox.setUI(new MacComboBoxUI());
+        taskModeBox.setBorder(BorderFactory.createEmptyBorder(2, 10, 2, 6));
+        taskModeBox.setBackground(new Color(255, 255, 255, 215));
         modePanel.add(taskModeBox);
         footer.add(modePanel, c);
         c.gridy = 3; c.insets = new Insets(0, 0, 0, 0);
@@ -298,6 +307,13 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         recordButton.addActionListener(event -> toggleRecording());
         clearRecordingButton.addActionListener(event -> clearRecording());
         taskModeBox.addActionListener(event -> refreshControls());
+        recordingSummaryLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        recordingSummaryLabel.setToolTipText("双击编辑录制动作");
+        recordingSummaryLabel.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) {
+                if (event.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(event)) showRecordingEditor();
+            }
+        });
         pointList.addListSelectionListener(event -> { if (!event.getValueIsAdjusting()) refreshControls(); });
         pointList.addMouseListener(new MouseAdapter() {
             @Override public void mouseClicked(MouseEvent event) {
@@ -335,10 +351,11 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
 
     @Override public void nativeKeyPressed(NativeKeyEvent event) {
         switch (event.getKeyCode()) {
-            case NativeKeyEvent.VC_F3 -> SwingUtilities.invokeLater(() -> { if (recording) stopRecording(); else saveMousePosition(); });
+            case NativeKeyEvent.VC_F3 -> SwingUtilities.invokeLater(() -> { if (!recording) saveMousePosition(); });
             case NativeKeyEvent.VC_F4 -> SwingUtilities.invokeLater(this::startClicking);
             case NativeKeyEvent.VC_F5 -> SwingUtilities.invokeLater(this::pauseOrResume);
             case NativeKeyEvent.VC_F6 -> SwingUtilities.invokeLater(() -> stopClicking("快捷键停止"));
+            case NativeKeyEvent.VC_F7 -> SwingUtilities.invokeLater(this::toggleRecording);
             default -> { }
         }
     }
@@ -361,7 +378,9 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         long now = System.currentTimeMillis();
         int delay = (int) Math.min(60_000, Math.max(0, now - lastRecordedAt));
         lastRecordedAt = now;
-        recordedActions.add(new RecordedMouseAction(type, event.getX(), event.getY(), event.getButton(), delay));
+        // 使用 AWT 当前指针坐标而非原生钩子坐标，避免 Windows 高 DPI 缩放导致回放偏移。
+        Point position = MouseInfo.getPointerInfo() == null ? new Point(event.getX(), event.getY()) : MouseInfo.getPointerInfo().getLocation();
+        recordedActions.add(new RecordedMouseAction(type, position.x, position.y, event.getButton(), delay));
         SwingUtilities.invokeLater(this::refreshRecordingSummary);
     }
 
@@ -372,9 +391,9 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         recording = true;
         lastRecordedAt = System.currentTimeMillis();
         lastMoveRecordedAt = 0;
-        recordButton.setText("停止录制 (F3)");
+        recordButton.setText("停止录制 (F7)");
         statusLabel.setForeground(RED);
-        statusLabel.setText("录制中 · 执行鼠标操作，按 F3 停止录制");
+        statusLabel.setText("录制中 · 执行鼠标操作，按 F7 停止录制");
         refreshControls();
         appendLog("开始录制鼠标操作");
     }
@@ -397,6 +416,80 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         saveQuietly();
         refreshRecordingSummary();
         statusLabel.setText("已清除录制内容");
+    }
+
+    private void showRecordingEditor() {
+        if (recording || clickTimer != null || recordedActions.isEmpty()) return;
+        DefaultListModel<String> model = new DefaultListModel<>();
+        JList<String> actionList = new JList<>(model);
+        actionList.setCellRenderer(new MacPointRenderer());
+        actionList.setFixedCellHeight(32);
+        refreshRecordingActionList(model);
+        JPanel root = new RoundPanel(new Color(255, 255, 255, 245), 20);
+        root.setLayout(new BorderLayout(0, 12));
+        root.setBorder(BorderFactory.createEmptyBorder(18, 18, 18, 18));
+        JLabel title = new JLabel("录制动作 · 双击动作编辑参数");
+        title.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 16));
+        title.setForeground(TEXT);
+        root.add(title, BorderLayout.NORTH);
+        root.add(new JScrollPane(actionList), BorderLayout.CENTER);
+        JPanel controls = new JPanel(new FlowLayout(FlowLayout.CENTER, 7, 0));
+        controls.setOpaque(false);
+        RoundButton up = new RoundButton("上移", new Color(94, 92, 230));
+        RoundButton down = new RoundButton("下移", new Color(94, 92, 230));
+        RoundButton remove = new RoundButton("删除", RED);
+        RoundButton done = new RoundButton("完成", BLUE);
+        controls.add(up); controls.add(down); controls.add(remove); controls.add(done);
+        root.add(controls, BorderLayout.SOUTH);
+        JDialog dialog = createMacDialog("编辑录制", root);
+        actionList.addMouseListener(new MouseAdapter() {
+            @Override public void mouseClicked(MouseEvent event) { if (event.getClickCount() == 2) editRecordedAction(actionList.getSelectedIndex(), model); }
+        });
+        up.addActionListener(event -> moveRecordedAction(actionList, model, -1));
+        down.addActionListener(event -> moveRecordedAction(actionList, model, 1));
+        remove.addActionListener(event -> {
+            int index = actionList.getSelectedIndex();
+            if (index >= 0) { recordedActions.remove(index); refreshRecordingActionList(model); if (!recordedActions.isEmpty()) actionList.setSelectedIndex(Math.min(index, recordedActions.size() - 1)); }
+        });
+        done.addActionListener(event -> { saveQuietly(); refreshRecordingSummary(); dialog.dispose(); });
+        dialog.setVisible(true);
+    }
+
+    private void editRecordedAction(int index, DefaultListModel<String> model) {
+        if (index < 0 || index >= recordedActions.size()) return;
+        RecordedMouseAction action = recordedActions.get(index);
+        JComboBox<RecordedActionType> typeBox = new JComboBox<>(RecordedActionType.values());
+        typeBox.setSelectedItem(action.type);
+        JSpinner x = spinner(action.x, -20_000, 20_000, 1);
+        JSpinner y = spinner(action.y, -20_000, 20_000, 1);
+        JSpinner delay = spinner(action.delayMs, 0, 60_000, 10);
+        JPanel fields = dialogFields();
+        addDialogRow(fields, 0, "动作类型", typeBox, "");
+        addDialogRow(fields, 1, "X 坐标", x, "像素");
+        addDialogRow(fields, 2, "Y 坐标", y, "像素");
+        addDialogRow(fields, 3, "执行前延迟", delay, "毫秒");
+        if (showMacConfirmDialog("编辑录制动作 " + (index + 1), fields) == JOptionPane.OK_OPTION) {
+            recordedActions.set(index, new RecordedMouseAction((RecordedActionType) typeBox.getSelectedItem(), intValue(x), intValue(y), action.button, intValue(delay)));
+            refreshRecordingActionList(model);
+            saveQuietly();
+        }
+    }
+
+    private void moveRecordedAction(JList<String> list, DefaultListModel<String> model, int direction) {
+        int index = list.getSelectedIndex();
+        int target = index + direction;
+        if (index < 0 || target < 0 || target >= recordedActions.size()) return;
+        Collections.swap(recordedActions, index, target);
+        refreshRecordingActionList(model);
+        list.setSelectedIndex(target);
+    }
+
+    private void refreshRecordingActionList(DefaultListModel<String> model) {
+        model.clear();
+        for (int i = 0; i < recordedActions.size(); i++) {
+            RecordedMouseAction action = recordedActions.get(i);
+            model.addElement(String.format("%02d  ·  %s   (%d, %d)   延迟 %dms", i + 1, action.type, action.x, action.y, action.delayMs));
+        }
     }
 
     private void showGlobalSettingsDialog() {
@@ -478,13 +571,16 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     }
 
     private int showMacConfirmDialog(String title, JPanel content) {
-        JOptionPane pane = new JOptionPane(content, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{"保存", "取消"}, "保存");
+        RoundButton save = new RoundButton("保存", BLUE);
+        RoundButton cancel = new RoundButton("取消", new Color(142, 142, 147));
+        JOptionPane pane = new JOptionPane(content, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{save, cancel}, save);
         pane.setBackground(new Color(255, 255, 255, 238));
         JDialog dialog = pane.createDialog(this, title);
+        dialog.setUndecorated(true);
         dialog.setResizable(false);
         dialog.getContentPane().setBackground(new Color(255, 255, 255, 238));
         dialog.setVisible(true);
-        return "保存".equals(pane.getValue()) ? JOptionPane.OK_OPTION : JOptionPane.CANCEL_OPTION;
+        return pane.getValue() == save ? JOptionPane.OK_OPTION : JOptionPane.CANCEL_OPTION;
     }
 
     private void addDialogRow(JPanel panel, int row, String text, JSpinner spinner, String unit) {
@@ -510,6 +606,40 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         panel.add(field, c);
         c.gridx = 2;
         panel.add(new JLabel(unit), c);
+    }
+
+    private void addDialogRow(JPanel panel, int row, String text, JComboBox<?> comboBox, String unit) {
+        GridBagConstraints c = new GridBagConstraints();
+        c.gridy = row; c.insets = new Insets(5, 4, 5, 4); c.fill = GridBagConstraints.HORIZONTAL;
+        c.gridx = 0; c.weightx = 1;
+        panel.add(new JLabel(text), c);
+        c.gridx = 1; c.weightx = 0;
+        comboBox.setUI(new MacComboBoxUI());
+        panel.add(comboBox, c);
+        c.gridx = 2;
+        panel.add(new JLabel(unit), c);
+    }
+
+    private JDialog createMacDialog(String title, JPanel content) {
+        JDialog dialog = new JDialog(this, title, true);
+        dialog.setUndecorated(true);
+        JPanel shell = new GlassBackgroundPanel();
+        shell.setLayout(new BorderLayout(0, 8));
+        shell.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+        JPanel titleBar = new JPanel(new BorderLayout());
+        titleBar.setOpaque(false);
+        JLabel titleLabel = new JLabel(title);
+        titleLabel.setForeground(TEXT);
+        titleLabel.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 14));
+        titleBar.add(new TrafficLightPanel(), BorderLayout.WEST);
+        titleBar.add(titleLabel, BorderLayout.CENTER);
+        shell.add(titleBar, BorderLayout.NORTH);
+        shell.add(content, BorderLayout.CENTER);
+        dialog.setContentPane(shell);
+        dialog.pack();
+        dialog.setMinimumSize(new Dimension(420, 260));
+        dialog.setLocationRelativeTo(this);
+        return dialog;
     }
 
     private JSpinner spinner(int value, int min, int max, int step) {
@@ -910,6 +1040,48 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         private final int x, y;
         private int startDelayMs, intervalMs, clicks;
         private ClickPoint(String name, int x, int y, int startDelayMs, int intervalMs, int clicks) { this.name = name; this.x = x; this.y = y; this.startDelayMs = startDelayMs; this.intervalMs = intervalMs; this.clicks = clicks; }
+    }
+    private class MacWindowControls extends JPanel {
+        MacWindowControls() {
+            super(new FlowLayout(FlowLayout.RIGHT, 7, 0));
+            setOpaque(false);
+            add(new MacCircleButton(new Color(255, 95, 86), "×", () -> dispatchEvent(new WindowEvent(AutoClickerApp.this, WindowEvent.WINDOW_CLOSING))));
+            add(new MacCircleButton(new Color(255, 189, 46), "−", () -> setState(JFrame.ICONIFIED)));
+            add(new MacCircleButton(new Color(39, 201, 63), "+", () -> setExtendedState(getExtendedState() == JFrame.MAXIMIZED_BOTH ? JFrame.NORMAL : JFrame.MAXIMIZED_BOTH)));
+        }
+    }
+    private static class MacCircleButton extends JButton {
+        private final Color color; private final String glyph;
+        MacCircleButton(Color color, String glyph, Runnable action) {
+            this.color = color; this.glyph = glyph;
+            setPreferredSize(new Dimension(15, 15)); setBorderPainted(false); setFocusPainted(false); setContentAreaFilled(false);
+            addActionListener(event -> action.run());
+        }
+        @Override protected void paintComponent(Graphics graphics) {
+            Graphics2D g2 = (Graphics2D) graphics.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(color); g2.fillOval(1, 1, 13, 13);
+            if (getModel().isRollover()) { g2.setColor(new Color(70, 70, 70)); g2.setFont(new Font("Arial", Font.BOLD, 10)); g2.drawString(glyph, 5, 11); }
+            g2.dispose();
+        }
+    }
+    private class DragWindowAdapter extends MouseAdapter {
+        private Point dragAnchor;
+        @Override public void mousePressed(MouseEvent event) { dragAnchor = event.getPoint(); }
+        @Override public void mouseDragged(MouseEvent event) {
+            if (dragAnchor == null) return;
+            Point point = event.getLocationOnScreen();
+            setLocation(point.x - dragAnchor.x, point.y - dragAnchor.y);
+        }
+    }
+    private static class MacComboBoxUI extends BasicComboBoxUI {
+        @Override protected JButton createArrowButton() {
+            JButton button = new JButton("⌄");
+            button.setFont(new Font("Arial", Font.BOLD, 13));
+            button.setForeground(new Color(75, 80, 90));
+            button.setBorderPainted(false); button.setFocusPainted(false); button.setContentAreaFilled(false);
+            return button;
+        }
     }
     private enum RecordedActionType { MOVE, PRESS, RELEASE }
     private static class RecordedMouseAction {
