@@ -1045,7 +1045,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         MacWindowControls() {
             super(new FlowLayout(FlowLayout.RIGHT, 7, 0));
             setOpaque(false);
-            add(new MacCircleButton(new Color(255, 95, 86), "×", () -> dispatchEvent(new WindowEvent(AutoClickerApp.this, WindowEvent.WINDOW_CLOSING))));
+            add(new MacCircleButton(new Color(255, 95, 86), "×", () -> AutoClickerApp.this.dispatchEvent(new WindowEvent(AutoClickerApp.this, WindowEvent.WINDOW_CLOSING))));
             add(new MacCircleButton(new Color(255, 189, 46), "−", () -> setState(JFrame.ICONIFIED)));
             add(new MacCircleButton(new Color(39, 201, 63), "+", () -> setExtendedState(getExtendedState() == JFrame.MAXIMIZED_BOTH ? JFrame.NORMAL : JFrame.MAXIMIZED_BOTH)));
         }
