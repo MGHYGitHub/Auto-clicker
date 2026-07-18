@@ -163,8 +163,14 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         titleRow.add(title, BorderLayout.WEST);
         titleRow.add(new MacWindowControls(), BorderLayout.EAST);
         DragWindowAdapter dragAdapter = new DragWindowAdapter();
+        header.addMouseListener(dragAdapter);
+        header.addMouseMotionListener(dragAdapter);
         titleRow.addMouseListener(dragAdapter);
         titleRow.addMouseMotionListener(dragAdapter);
+        title.addMouseListener(dragAdapter);
+        title.addMouseMotionListener(dragAdapter);
+        subtitle.addMouseListener(dragAdapter);
+        subtitle.addMouseMotionListener(dragAdapter);
         header.add(titleRow, BorderLayout.NORTH);
         header.add(subtitle, BorderLayout.SOUTH);
         content.add(header, BorderLayout.NORTH);
@@ -573,16 +579,38 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     private int showMacConfirmDialog(String title, JPanel content) {
         RoundButton save = new RoundButton("保存", BLUE);
         RoundButton cancel = new RoundButton("取消", new Color(142, 142, 147));
-        JOptionPane pane = new JOptionPane(content, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{save, cancel}, save);
-        pane.setBackground(new Color(255, 255, 255, 238));
         JDialog dialog = new JDialog(this, title, true);
         dialog.setUndecorated(true);
         dialog.setResizable(false);
-        dialog.setContentPane(pane);
+        final boolean[] saved = {false};
+        JPanel root = new RoundPanel(new Color(255, 255, 255, 248), 20);
+        root.setLayout(new BorderLayout(0, 12));
+        root.setBorder(BorderFactory.createEmptyBorder(14, 16, 16, 16));
+        JPanel titleBar = new JPanel(new BorderLayout());
+        titleBar.setOpaque(false);
+        JLabel titleLabel = new JLabel(title);
+        titleLabel.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 14));
+        titleLabel.setForeground(TEXT);
+        RoundButton close = new RoundButton("关闭", new Color(142, 142, 147));
+        close.setPreferredSize(new Dimension(70, 28));
+        close.addActionListener(event -> dialog.dispose());
+        titleBar.add(titleLabel, BorderLayout.WEST);
+        titleBar.add(close, BorderLayout.EAST);
+        root.add(titleBar, BorderLayout.NORTH);
+        root.add(content, BorderLayout.CENTER);
+        JPanel buttonBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        buttonBar.setOpaque(false);
+        save.addActionListener(event -> { saved[0] = true; dialog.dispose(); });
+        cancel.addActionListener(event -> dialog.dispose());
+        buttonBar.add(cancel);
+        buttonBar.add(save);
+        root.add(buttonBar, BorderLayout.SOUTH);
+        dialog.setContentPane(root);
         dialog.pack();
+        dialog.setMinimumSize(new Dimension(420, dialog.getHeight()));
         dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
-        return pane.getValue() == save ? JOptionPane.OK_OPTION : JOptionPane.CANCEL_OPTION;
+        return saved[0] ? JOptionPane.OK_OPTION : JOptionPane.CANCEL_OPTION;
     }
 
     private void addDialogRow(JPanel panel, int row, String text, JSpinner spinner, String unit) {
@@ -1068,12 +1096,16 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         }
     }
     private class DragWindowAdapter extends MouseAdapter {
-        private Point dragAnchor;
-        @Override public void mousePressed(MouseEvent event) { dragAnchor = event.getPoint(); }
+        private Point screenAnchor;
+        private Point windowAnchor;
+        @Override public void mousePressed(MouseEvent event) {
+            screenAnchor = event.getLocationOnScreen();
+            windowAnchor = AutoClickerApp.this.getLocation();
+        }
         @Override public void mouseDragged(MouseEvent event) {
-            if (dragAnchor == null) return;
+            if (screenAnchor == null || windowAnchor == null) return;
             Point point = event.getLocationOnScreen();
-            setLocation(point.x - dragAnchor.x, point.y - dragAnchor.y);
+            AutoClickerApp.this.setLocation(windowAnchor.x + point.x - screenAnchor.x, windowAnchor.y + point.y - screenAnchor.y);
         }
     }
     private static class MacComboBoxUI extends BasicComboBoxUI {
