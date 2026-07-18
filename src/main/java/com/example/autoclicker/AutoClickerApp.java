@@ -74,6 +74,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Properties;
 import java.util.logging.Level;
@@ -132,6 +133,8 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     private long lastRecordedAt;
     private long lastMoveRecordedAt;
     private int replayIndex;
+    private final java.util.Set<Integer> nativeKeysDown = new HashSet<>();
+    private final java.util.Set<Integer> suppressedSystemKeys = new HashSet<>();
     private int resizeCursorType = Cursor.DEFAULT_CURSOR;
     private Point resizeScreenAnchor;
     private Rectangle resizeBoundsAnchor;
@@ -366,7 +369,12 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     }
 
     @Override public void nativeKeyPressed(NativeKeyEvent event) {
-        if (recording && !isApplicationHotkey(event.getKeyCode())) recordKeyboardAction(RecordedActionType.KEY_PRESS, event);
+        nativeKeysDown.add(event.getKeyCode());
+        if (isSystemReservedShortcut(event.getKeyCode())) {
+            suppressCurrentSystemShortcut(event.getKeyCode());
+            return;
+        }
+        if (recording && !isApplicationHotkey(event.getKeyCode()) && !suppressedSystemKeys.contains(event.getKeyCode())) recordKeyboardAction(RecordedActionType.KEY_PRESS, event);
         switch (event.getKeyCode()) {
             case NativeKeyEvent.VC_F3 -> SwingUtilities.invokeLater(() -> { if (!recording) saveMousePosition(); });
             case NativeKeyEvent.VC_F4 -> SwingUtilities.invokeLater(this::startClicking);
@@ -377,11 +385,37 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         }
     }
     @Override public void nativeKeyReleased(NativeKeyEvent event) {
+        nativeKeysDown.remove(event.getKeyCode());
+        if (suppressedSystemKeys.remove(event.getKeyCode())) return;
         if (recording && !isApplicationHotkey(event.getKeyCode())) recordKeyboardAction(RecordedActionType.KEY_RELEASE, event);
     }
 
     private boolean isApplicationHotkey(int code) {
         return code == NativeKeyEvent.VC_F3 || code == NativeKeyEvent.VC_F4 || code == NativeKeyEvent.VC_F5 || code == NativeKeyEvent.VC_F6 || code == NativeKeyEvent.VC_F7;
+    }
+
+    private boolean isSystemReservedShortcut(int code) {
+        boolean altDown = nativeKeysDown.contains(NativeKeyEvent.VC_ALT);
+        boolean metaDown = nativeKeysDown.contains(NativeKeyEvent.VC_META);
+        // Alt+Tab / Alt+Esc / Alt+F4，及 Win 组合键由操作系统优先处理，不应记录为任务动作。
+        return (altDown && (code == NativeKeyEvent.VC_TAB || code == NativeKeyEvent.VC_ESCAPE || code == NativeKeyEvent.VC_F4)) || metaDown;
+    }
+
+    private void suppressCurrentSystemShortcut(int triggerKey) {
+        suppressedSystemKeys.add(triggerKey);
+        if (nativeKeysDown.contains(NativeKeyEvent.VC_ALT)) {
+            suppressedSystemKeys.add(NativeKeyEvent.VC_ALT);
+            removeRecordedKeyEvents(NativeKeyEvent.VC_ALT);
+        }
+        if (nativeKeysDown.contains(NativeKeyEvent.VC_META)) {
+            suppressedSystemKeys.add(NativeKeyEvent.VC_META);
+            removeRecordedKeyEvents(NativeKeyEvent.VC_META);
+        }
+        removeRecordedKeyEvents(triggerKey);
+    }
+
+    private void removeRecordedKeyEvents(int keyCode) {
+        recordedActions.removeIf(action -> (action.type == RecordedActionType.KEY_PRESS || action.type == RecordedActionType.KEY_RELEASE) && action.keyCode == keyCode);
     }
 
     private void recordKeyboardAction(RecordedActionType type, NativeKeyEvent event) {
@@ -628,9 +662,11 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         JLabel titleLabel = new JLabel(title);
         titleLabel.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 14));
         titleLabel.setForeground(TEXT);
-        JPanel closeControl = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        JPanel closeControl = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 0));
         closeControl.setOpaque(false);
         closeControl.add(new MacCircleButton(new Color(255, 95, 86), "×", dialog::dispose));
+        closeControl.add(new MacCircleButton(new Color(255, 189, 46), "−", () -> { }));
+        closeControl.add(new MacCircleButton(new Color(40, 200, 64), "+", () -> { }));
         titleBar.add(titleLabel, BorderLayout.WEST);
         titleBar.add(closeControl, BorderLayout.EAST);
         root.add(titleBar, BorderLayout.NORTH);
@@ -649,6 +685,41 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         dialog.setVisible(true);
         repaint();
         return saved[0] ? JOptionPane.OK_OPTION : JOptionPane.CANCEL_OPTION;
+    }
+
+    private void showMacMessage(String title, String message) {
+        JPanel body = new JPanel(new BorderLayout(0, 14));
+        body.setOpaque(false);
+        JLabel text = new JLabel("<html>" + message.replace("\n", "<br>") + "</html>");
+        text.setForeground(TEXT);
+        body.add(text, BorderLayout.CENTER);
+        JDialog dialog = createMacDialog(title, body);
+        RoundButton done = new RoundButton("完成", BLUE);
+        done.addActionListener(event -> dialog.dispose());
+        body.add(done, BorderLayout.SOUTH);
+        dialog.pack();
+        dialog.setVisible(true);
+        repaint();
+    }
+
+    private boolean showMacYesNo(String title, String message) {
+        final boolean[] yes = {false};
+        JPanel body = new JPanel(new BorderLayout(0, 14));
+        body.setOpaque(false);
+        body.add(new JLabel(message), BorderLayout.CENTER);
+        JDialog dialog = createMacDialog(title, body);
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        actions.setOpaque(false);
+        RoundButton cancel = new RoundButton("取消", new Color(142, 142, 147));
+        RoundButton confirm = new RoundButton("确认", RED);
+        cancel.addActionListener(event -> dialog.dispose());
+        confirm.addActionListener(event -> { yes[0] = true; dialog.dispose(); });
+        actions.add(cancel); actions.add(confirm);
+        body.add(actions, BorderLayout.SOUTH);
+        dialog.pack();
+        dialog.setVisible(true);
+        repaint();
+        return yes[0];
     }
 
     private void addDialogRow(JPanel panel, int row, String text, JSpinner spinner, String unit) {
@@ -703,6 +774,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         dialogControls.setOpaque(false);
         dialogControls.add(new MacCircleButton(new Color(255, 95, 86), "×", dialog::dispose));
         dialogControls.add(new MacCircleButton(new Color(255, 189, 46), "−", () -> { }));
+        dialogControls.add(new MacCircleButton(new Color(40, 200, 64), "+", () -> { }));
         titleBar.add(dialogControls, BorderLayout.WEST);
         titleBar.add(titleLabel, BorderLayout.CENTER);
         shell.add(titleBar, BorderLayout.NORTH);
@@ -740,7 +812,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
             return;
         }
         if (savedPoints.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "请先移动鼠标到目标位置，再按 F3 添加任务点位。", "尚未添加点位", JOptionPane.INFORMATION_MESSAGE);
+            showMacMessage("尚未添加点位", "请先移动鼠标到目标位置，再按 F3 添加任务点位。");
             return;
         }
         clickCount = 0;
@@ -758,7 +830,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
 
     private void startRecordingPlayback() {
         if (recordedActions.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "请先录制鼠标操作，再选择录制回放模式启动。", "没有录制内容", JOptionPane.INFORMATION_MESSAGE);
+            showMacMessage("没有录制内容", "请先录制鼠标操作，再选择录制回放模式启动。");
             return;
         }
         clickCount = 0;
@@ -950,8 +1022,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
 
     private void clearPoints() {
         if (clickTimer != null || savedPoints.isEmpty()) return;
-        int choice = JOptionPane.showConfirmDialog(this, "确定清空全部 " + savedPoints.size() + " 个点位吗？", "清空点位", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
-        if (choice != JOptionPane.YES_OPTION) return;
+        if (!showMacYesNo("清空点位", "确定清空全部 " + savedPoints.size() + " 个点位吗？")) return;
         savedPoints.clear();
         saveQuietly();
         refreshInterface();
@@ -979,7 +1050,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         JFileChooser chooser = configurationChooser();
         if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
         Path file = ensurePropertiesExtension(chooser.getSelectedFile().toPath());
-        if (Files.exists(file) && JOptionPane.showConfirmDialog(this, "文件已存在，是否覆盖？", "确认覆盖", JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
+        if (Files.exists(file) && !showMacYesNo("确认覆盖", "文件已存在，是否覆盖？")) return;
         try {
             saveConfiguration(file);
             if (changeCurrentFile) currentConfigFile = file;
@@ -1022,7 +1093,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     }
 
     private void showUsage() {
-        JOptionPane.showMessageDialog(this, "1. 移动鼠标到目标位置，按 F3 添加点位。\n2. 双击点位，可设置该点位的延迟、间隔和点击次数。\n3. 在“设置 → 设置任务界面”修改新点位默认参数和任务循环次数。\n4. F4 启动，F5 暂停/继续，F6 立即停止。\n5. 配置会自动保存；也可在“文件”菜单导入、导出或另存为。", "使用说明", JOptionPane.INFORMATION_MESSAGE);
+        showMacMessage("使用说明", "1. 移动鼠标到目标位置，按 F3 添加点位。\n2. 双击点位，设置独立动作和参数。\n3. 在“设置”中修改任务默认参数。\n4. F4 启动，F5 暂停/继续，F6 停止，F7 录制。\n5. 配置会自动保存，也可导入导出。");
     }
 
     private void openLogFile() {
@@ -1035,7 +1106,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     }
 
     private void checkForUpdates() {
-        JOptionPane.showMessageDialog(this, "当前为本地版本，尚未配置在线更新服务。", "检查更新", JOptionPane.INFORMATION_MESSAGE);
+        showMacMessage("检查更新", "当前为本地版本，尚未配置在线更新服务。");
     }
 
     private void saveConfiguration(Path file) throws IOException {
@@ -1194,7 +1265,10 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     }
     private void saveQuietly() { try { saveConfiguration(defaultConfigFile); } catch (IOException exception) { appendLog("自动保存失败：" + exception.getMessage()); } }
     private void appendLog(String text) { try { Files.createDirectories(appDirectory); Files.writeString(logFile, "[" + LocalDateTime.now().format(TIME_FORMAT) + "] " + text + System.lineSeparator(), StandardCharsets.UTF_8, Files.exists(logFile) ? java.nio.file.StandardOpenOption.APPEND : java.nio.file.StandardOpenOption.CREATE); } catch (IOException ignored) { } }
-    private void showError(String title, Exception exception) { appendLog(title + "：" + exception.getMessage()); JOptionPane.showMessageDialog(this, exception.getMessage(), title, JOptionPane.ERROR_MESSAGE); }
+    private void showError(String title, Exception exception) {
+        appendLog(title + "：" + exception.getMessage());
+        showMacMessage(title, exception.getMessage());
+    }
 
     public static void main(String[] args) {
         SwingUtilities.invokeLater(() -> {
