@@ -35,6 +35,7 @@ import javax.swing.Timer;
 import javax.swing.filechooser.FileNameExtensionFilter;
 import javax.swing.plaf.basic.BasicComboBoxUI;
 import java.awt.AWTException;
+import java.awt.AWTEvent;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Cursor;
@@ -52,8 +53,11 @@ import java.awt.Insets;
 import java.awt.MouseInfo;
 import java.awt.Point;
 import java.awt.RenderingHints;
+import java.awt.Rectangle;
 import java.awt.Robot;
+import java.awt.Toolkit;
 import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
@@ -75,7 +79,7 @@ import java.util.logging.Logger;
 
 /** ClickFlow：支持独立点位参数、配置持久化与全局快捷键的桌面连点器。 */
 public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeMouseListener, NativeMouseMotionListener {
-    private static final Color BACKGROUND = new Color(246, 247, 251);
+    private static final Color BACKGROUND = Color.WHITE;
     private static final Color CARD = new Color(255, 255, 255, 220);
     private static final Color TEXT = new Color(28, 34, 45);
     private static final Color SUBTLE_TEXT = new Color(107, 114, 128);
@@ -126,6 +130,9 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     private long lastRecordedAt;
     private long lastMoveRecordedAt;
     private int replayIndex;
+    private int resizeCursorType = Cursor.DEFAULT_CURSOR;
+    private Point resizeScreenAnchor;
+    private Rectangle resizeBoundsAnchor;
 
     public AutoClickerApp() throws AWTException {
         super("ClickFlow · 自动化连点器");
@@ -136,6 +143,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         createInterface();
         setIconImage(loadAppIcon());
         bindActions();
+        installResizeSupport();
         registerGlobalHotkeys();
         refreshInterface();
         appendLog("程序已启动");
@@ -356,6 +364,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     }
 
     @Override public void nativeKeyPressed(NativeKeyEvent event) {
+        if (recording && !isApplicationHotkey(event.getKeyCode())) recordKeyboardAction(RecordedActionType.KEY_PRESS, event);
         switch (event.getKeyCode()) {
             case NativeKeyEvent.VC_F3 -> SwingUtilities.invokeLater(() -> { if (!recording) saveMousePosition(); });
             case NativeKeyEvent.VC_F4 -> SwingUtilities.invokeLater(this::startClicking);
@@ -364,6 +373,21 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
             case NativeKeyEvent.VC_F7 -> SwingUtilities.invokeLater(this::toggleRecording);
             default -> { }
         }
+    }
+    @Override public void nativeKeyReleased(NativeKeyEvent event) {
+        if (recording && !isApplicationHotkey(event.getKeyCode())) recordKeyboardAction(RecordedActionType.KEY_RELEASE, event);
+    }
+
+    private boolean isApplicationHotkey(int code) {
+        return code == NativeKeyEvent.VC_F3 || code == NativeKeyEvent.VC_F4 || code == NativeKeyEvent.VC_F5 || code == NativeKeyEvent.VC_F6 || code == NativeKeyEvent.VC_F7;
+    }
+
+    private void recordKeyboardAction(RecordedActionType type, NativeKeyEvent event) {
+        long now = System.currentTimeMillis();
+        int delay = (int) Math.min(60_000, Math.max(0, now - lastRecordedAt));
+        lastRecordedAt = now;
+        recordedActions.add(new RecordedMouseAction(type, 0, 0, 0, delay, event.getKeyCode()));
+        SwingUtilities.invokeLater(this::refreshRecordingSummary);
     }
 
     @Override public void nativeMousePressed(NativeMouseEvent event) { recordMouseAction(RecordedActionType.PRESS, event); }
@@ -475,7 +499,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         addDialogRow(fields, 2, "Y 坐标", y, "像素");
         addDialogRow(fields, 3, "执行前延迟", delay, "毫秒");
         if (showMacConfirmDialog("编辑录制动作 " + (index + 1), fields) == JOptionPane.OK_OPTION) {
-            recordedActions.set(index, new RecordedMouseAction((RecordedActionType) typeBox.getSelectedItem(), intValue(x), intValue(y), action.button, intValue(delay)));
+            recordedActions.set(index, new RecordedMouseAction((RecordedActionType) typeBox.getSelectedItem(), intValue(x), intValue(y), action.button, intValue(delay), action.keyCode));
             refreshRecordingActionList(model);
             saveQuietly();
         }
@@ -494,7 +518,8 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         model.clear();
         for (int i = 0; i < recordedActions.size(); i++) {
             RecordedMouseAction action = recordedActions.get(i);
-            model.addElement(String.format("%02d  ·  %s   (%d, %d)   延迟 %dms", i + 1, action.type, action.x, action.y, action.delayMs));
+            String detail = (action.type == RecordedActionType.KEY_PRESS || action.type == RecordedActionType.KEY_RELEASE) ? NativeKeyEvent.getKeyText(action.keyCode) : "(" + action.x + ", " + action.y + ")";
+            model.addElement(String.format("%02d  ·  %s   %s   延迟 %dms", i + 1, action.type, detail, action.delayMs));
         }
     }
 
@@ -547,18 +572,28 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         if (index < 0) return;
         ClickPoint point = savedPoints.get(index);
         JTextField nameField = new JTextField(point.name, 18);
+        JComboBox<PointActionType> actionType = new JComboBox<>(PointActionType.values());
+        actionType.setSelectedItem(point.actionType);
+        JSpinner wheelSteps = spinner(point.wheelSteps, -100, 100, 1);
+        JTextField hotkey = new JTextField(point.hotkey, 18);
         JSpinner startDelay = spinner(point.startDelayMs, 0, 60_000, 50);
         JSpinner interval = spinner(point.intervalMs, 10, 60_000, 10);
         JSpinner clicks = spinner(point.clicks, 1, 100_000, 1);
         JPanel fields = dialogFields();
         addDialogRow(fields, 0, "点位名称", nameField, "");
-        addDialogRow(fields, 1, "开始前延迟", startDelay, "毫秒");
-        addDialogRow(fields, 2, "连续点击间隔", interval, "毫秒");
-        addDialogRow(fields, 3, "此点位点击次数", clicks, "次");
+        addDialogRow(fields, 1, "动作", actionType, "滚轮正数向上");
+        addDialogRow(fields, 2, "滚轮步数", wheelSteps, "负数向下");
+        addDialogRow(fields, 3, "快捷键", hotkey, "例：CTRL+S");
+        addDialogRow(fields, 4, "开始前延迟", startDelay, "毫秒");
+        addDialogRow(fields, 5, "连续点击间隔", interval, "毫秒");
+        addDialogRow(fields, 6, "此点位执行次数", clicks, "次");
         int choice = showMacConfirmDialog("编辑点位 " + (index + 1) + "  ·  (" + point.x + ", " + point.y + ")", fields);
         if (choice == JOptionPane.OK_OPTION) {
             String name = nameField.getText().trim();
             point.name = name.isEmpty() ? "点位 " + (index + 1) : name;
+            point.actionType = (PointActionType) actionType.getSelectedItem();
+            point.wheelSteps = intValue(wheelSteps);
+            point.hotkey = hotkey.getText().trim();
             point.startDelayMs = intValue(startDelay);
             point.intervalMs = intValue(interval);
             point.clicks = intValue(clicks);
@@ -610,6 +645,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         dialog.setMinimumSize(new Dimension(420, dialog.getHeight()));
         dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
+        repaint();
         return saved[0] ? JOptionPane.OK_OPTION : JOptionPane.CANCEL_OPTION;
     }
 
@@ -741,13 +777,16 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
     private void runRecordedAction() {
         if (clickTimer == null) return;
         RecordedMouseAction action = recordedActions.get(replayIndex);
-        robot.mouseMove(action.x, action.y);
+        if (action.type == RecordedActionType.MOVE || action.type == RecordedActionType.PRESS || action.type == RecordedActionType.RELEASE) robot.mouseMove(action.x, action.y);
         if (action.type == RecordedActionType.PRESS) robot.mousePress(toRobotButtonMask(action.button));
         if (action.type == RecordedActionType.RELEASE) {
             robot.mouseRelease(toRobotButtonMask(action.button));
             clickCount++;
             countLabel.setText(clickCount + " 次点击 · 已完成 " + completedTaskCycles + " 轮");
         }
+        int replayKeyCode = toRobotKeyCode(action.keyCode);
+        if (action.type == RecordedActionType.KEY_PRESS && replayKeyCode != KeyEvent.VK_UNDEFINED) robot.keyPress(replayKeyCode);
+        if (action.type == RecordedActionType.KEY_RELEASE && replayKeyCode != KeyEvent.VK_UNDEFINED) robot.keyRelease(replayKeyCode);
         replayIndex++;
         if (replayIndex >= recordedActions.size()) {
             completedTaskCycles++;
@@ -768,6 +807,40 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         };
     }
 
+    private int toRobotKeyCode(int nativeKeyCode) {
+        String keyText = NativeKeyEvent.getKeyText(nativeKeyCode);
+        return toRobotKeyCode(keyText == null ? "" : keyText.toUpperCase());
+    }
+
+    private void executeHotkey(String expression) {
+        if (expression == null || expression.isBlank()) return;
+        List<Integer> keys = new ArrayList<>();
+        for (String part : expression.toUpperCase().split("\\+")) {
+            int key = toRobotKeyCode(part.trim());
+            if (key != KeyEvent.VK_UNDEFINED) keys.add(key);
+        }
+        for (int key : keys) robot.keyPress(key);
+        for (int i = keys.size() - 1; i >= 0; i--) robot.keyRelease(keys.get(i));
+    }
+
+    private int toRobotKeyCode(String key) {
+        return switch (key) {
+            case "CTRL", "CONTROL" -> KeyEvent.VK_CONTROL;
+            case "ALT" -> KeyEvent.VK_ALT;
+            case "SHIFT" -> KeyEvent.VK_SHIFT;
+            case "WIN", "WINDOWS", "META" -> KeyEvent.VK_WINDOWS;
+            case "ENTER" -> KeyEvent.VK_ENTER;
+            case "ESC", "ESCAPE" -> KeyEvent.VK_ESCAPE;
+            case "SPACE" -> KeyEvent.VK_SPACE;
+            case "TAB" -> KeyEvent.VK_TAB;
+            default -> {
+                if (key.matches("F([1-9]|1[0-2])")) yield KeyEvent.VK_F1 + Integer.parseInt(key.substring(1)) - 1;
+                if (key.length() == 1) yield KeyEvent.getExtendedKeyCodeForChar(key.charAt(0));
+                yield KeyEvent.VK_UNDEFINED;
+            }
+        };
+    }
+
     private void scheduleNextPoint() {
         if (clickTimer == null) return;
         ClickPoint point = savedPoints.get(currentPointIndex);
@@ -779,8 +852,12 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         if (clickTimer == null) return;
         ClickPoint point = savedPoints.get(currentPointIndex);
         robot.mouseMove(point.x, point.y);
-        robot.mousePress(InputEvent.BUTTON1_DOWN_MASK);
-        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK);
+        switch (point.actionType) {
+            case LEFT_CLICK -> { robot.mousePress(InputEvent.BUTTON1_DOWN_MASK); robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK); }
+            case RIGHT_CLICK -> { robot.mousePress(InputEvent.BUTTON3_DOWN_MASK); robot.mouseRelease(InputEvent.BUTTON3_DOWN_MASK); }
+            case WHEEL -> robot.mouseWheel(point.wheelSteps);
+            case HOTKEY -> executeHotkey(point.hotkey);
+        }
         clickCount++;
         countLabel.setText(clickCount + " 次点击 · 已完成 " + completedTaskCycles + " 轮");
         remainingClicksAtPoint--;
@@ -967,12 +1044,13 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         for (int i = 0; i < savedPoints.size(); i++) {
             ClickPoint point = savedPoints.get(i);
             String encodedName = Base64.getUrlEncoder().encodeToString(point.name.getBytes(StandardCharsets.UTF_8));
-            properties.setProperty("point." + i, encodedName + "," + point.x + "," + point.y + "," + point.startDelayMs + "," + point.intervalMs + "," + point.clicks);
+            String encodedHotkey = Base64.getUrlEncoder().encodeToString(point.hotkey.getBytes(StandardCharsets.UTF_8));
+            properties.setProperty("point." + i, encodedName + "," + point.x + "," + point.y + "," + point.startDelayMs + "," + point.intervalMs + "," + point.clicks + "," + point.actionType + "," + point.wheelSteps + "," + encodedHotkey);
         }
         properties.setProperty("recording.count", String.valueOf(recordedActions.size()));
         for (int i = 0; i < recordedActions.size(); i++) {
             RecordedMouseAction action = recordedActions.get(i);
-            properties.setProperty("recording." + i, action.type + "," + action.x + "," + action.y + "," + action.button + "," + action.delayMs);
+            properties.setProperty("recording." + i, action.type + "," + action.x + "," + action.y + "," + action.button + "," + action.delayMs + "," + action.keyCode);
         }
         try (OutputStream output = Files.newOutputStream(file)) { properties.store(output, "ClickFlow configuration"); }
     }
@@ -991,7 +1069,11 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
             int count = positiveOrZero(properties, "points.count", 0);
             for (int i = 0; i < count; i++) {
                 String[] parts = properties.getProperty("point." + i, "").split(",");
-                if (parts.length == 6) {
+                if (parts.length == 9) {
+                    String name = new String(Base64.getUrlDecoder().decode(parts[0]), StandardCharsets.UTF_8);
+                    String hotkey = new String(Base64.getUrlDecoder().decode(parts[8]), StandardCharsets.UTF_8);
+                    savedPoints.add(new ClickPoint(name, Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), Math.max(0, Integer.parseInt(parts[3])), Math.max(10, Integer.parseInt(parts[4])), Math.max(1, Integer.parseInt(parts[5])), PointActionType.valueOf(parts[6]), Integer.parseInt(parts[7]), hotkey));
+                } else if (parts.length == 6) {
                     String name = new String(Base64.getUrlDecoder().decode(parts[0]), StandardCharsets.UTF_8);
                     savedPoints.add(new ClickPoint(name, Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), Math.max(0, Integer.parseInt(parts[3])), Math.max(10, Integer.parseInt(parts[4])), Math.max(1, Integer.parseInt(parts[5]))));
                 } else if (parts.length == 5) {
@@ -1002,8 +1084,8 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
             int recordingCount = positiveOrZero(properties, "recording.count", 0);
             for (int i = 0; i < recordingCount; i++) {
                 String[] parts = properties.getProperty("recording." + i, "").split(",");
-                if (parts.length != 5) continue;
-                recordedActions.add(new RecordedMouseAction(RecordedActionType.valueOf(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), Integer.parseInt(parts[3]), Math.max(0, Integer.parseInt(parts[4]))));
+                if (parts.length == 6) recordedActions.add(new RecordedMouseAction(RecordedActionType.valueOf(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), Integer.parseInt(parts[3]), Math.max(0, Integer.parseInt(parts[4])), Integer.parseInt(parts[5])));
+                else if (parts.length == 5) recordedActions.add(new RecordedMouseAction(RecordedActionType.valueOf(parts[0]), Integer.parseInt(parts[1]), Integer.parseInt(parts[2]), Integer.parseInt(parts[3]), Math.max(0, Integer.parseInt(parts[4]))));
             }
         } catch (Exception exception) {
             if (showErrors) showError("无法读取配置", exception);
@@ -1021,9 +1103,17 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         pointListModel.clear();
         for (int i = 0; i < savedPoints.size(); i++) {
             ClickPoint p = savedPoints.get(i);
-            pointListModel.addElement(String.format("%02d  ·  %s     (%d, %d)     延迟 %dms · 间隔 %dms · %d 次", i + 1, p.name, p.x, p.y, p.startDelayMs, p.intervalMs, p.clicks));
+            pointListModel.addElement(String.format("%02d  ·  %s     (%d, %d)     %s · 延迟 %dms · 间隔 %dms · %d 次", i + 1, p.name, p.x, p.y, pointActionText(p), p.startDelayMs, p.intervalMs, p.clicks));
         }
         if (selectedIndex >= 0 && selectedIndex < savedPoints.size()) pointList.setSelectedIndex(selectedIndex);
+    }
+    private String pointActionText(ClickPoint point) {
+        return switch (point.actionType) {
+            case LEFT_CLICK -> "左键";
+            case RIGHT_CLICK -> "右键";
+            case WHEEL -> "滚轮 " + point.wheelSteps + " 步";
+            case HOTKEY -> "快捷键 " + (point.hotkey.isBlank() ? "未设置" : point.hotkey);
+        };
     }
     private void refreshTaskSummary() {
         String cycleText = taskCycleLimit == 0 ? "无限循环" : taskCycleLimit + " 轮";
@@ -1054,6 +1144,48 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         var url = AutoClickerApp.class.getResource("/icons/clickflow-icon.png");
         return url == null ? null : new ImageIcon(url).getImage();
     }
+
+    private void installResizeSupport() {
+        Toolkit.getDefaultToolkit().addAWTEventListener(event -> {
+            if (!(event instanceof MouseEvent mouseEvent) || !isShowing()) return;
+            Object source = mouseEvent.getSource();
+            if (!(source instanceof java.awt.Component component) || !SwingUtilities.isDescendingFrom(component, getRootPane())) return;
+            if (mouseEvent.getID() == MouseEvent.MOUSE_MOVED) updateResizeCursor(mouseEvent);
+            if (mouseEvent.getID() == MouseEvent.MOUSE_PRESSED) beginResize(mouseEvent);
+            if (mouseEvent.getID() == MouseEvent.MOUSE_DRAGGED) resizeWindow(mouseEvent);
+            if (mouseEvent.getID() == MouseEvent.MOUSE_RELEASED) { resizeScreenAnchor = null; resizeBoundsAnchor = null; }
+        }, AWTEvent.MOUSE_MOTION_EVENT_MASK | AWTEvent.MOUSE_EVENT_MASK);
+    }
+
+    private void updateResizeCursor(MouseEvent event) {
+        int x = event.getXOnScreen() - getX();
+        int y = event.getYOnScreen() - getY();
+        int margin = 7;
+        boolean left = x <= margin, right = x >= getWidth() - margin, top = y <= margin, bottom = y >= getHeight() - margin;
+        resizeCursorType = top && left ? Cursor.NW_RESIZE_CURSOR : top && right ? Cursor.NE_RESIZE_CURSOR : bottom && left ? Cursor.SW_RESIZE_CURSOR : bottom && right ? Cursor.SE_RESIZE_CURSOR : left ? Cursor.W_RESIZE_CURSOR : right ? Cursor.E_RESIZE_CURSOR : top ? Cursor.N_RESIZE_CURSOR : bottom ? Cursor.S_RESIZE_CURSOR : Cursor.DEFAULT_CURSOR;
+        setCursor(Cursor.getPredefinedCursor(resizeCursorType));
+    }
+
+    private void beginResize(MouseEvent event) {
+        updateResizeCursor(event);
+        if (resizeCursorType == Cursor.DEFAULT_CURSOR) return;
+        resizeScreenAnchor = event.getLocationOnScreen();
+        resizeBoundsAnchor = getBounds();
+    }
+
+    private void resizeWindow(MouseEvent event) {
+        if (resizeScreenAnchor == null || resizeBoundsAnchor == null || resizeCursorType == Cursor.DEFAULT_CURSOR) return;
+        int dx = event.getXOnScreen() - resizeScreenAnchor.x, dy = event.getYOnScreen() - resizeScreenAnchor.y;
+        Rectangle next = new Rectangle(resizeBoundsAnchor);
+        if (resizeCursorType == Cursor.W_RESIZE_CURSOR || resizeCursorType == Cursor.NW_RESIZE_CURSOR || resizeCursorType == Cursor.SW_RESIZE_CURSOR) { next.x += dx; next.width -= dx; }
+        if (resizeCursorType == Cursor.E_RESIZE_CURSOR || resizeCursorType == Cursor.NE_RESIZE_CURSOR || resizeCursorType == Cursor.SE_RESIZE_CURSOR) next.width += dx;
+        if (resizeCursorType == Cursor.N_RESIZE_CURSOR || resizeCursorType == Cursor.NW_RESIZE_CURSOR || resizeCursorType == Cursor.NE_RESIZE_CURSOR) { next.y += dy; next.height -= dy; }
+        if (resizeCursorType == Cursor.S_RESIZE_CURSOR || resizeCursorType == Cursor.SW_RESIZE_CURSOR || resizeCursorType == Cursor.SE_RESIZE_CURSOR) next.height += dy;
+        Dimension minimum = getMinimumSize();
+        if (next.width < minimum.width) { if (next.x != resizeBoundsAnchor.x) next.x = resizeBoundsAnchor.x + resizeBoundsAnchor.width - minimum.width; next.width = minimum.width; }
+        if (next.height < minimum.height) { if (next.y != resizeBoundsAnchor.y) next.y = resizeBoundsAnchor.y + resizeBoundsAnchor.height - minimum.height; next.height = minimum.height; }
+        setBounds(next);
+    }
     private void saveQuietly() { try { saveConfiguration(defaultConfigFile); } catch (IOException exception) { appendLog("自动保存失败：" + exception.getMessage()); } }
     private void appendLog(String text) { try { Files.createDirectories(appDirectory); Files.writeString(logFile, "[" + LocalDateTime.now().format(TIME_FORMAT) + "] " + text + System.lineSeparator(), StandardCharsets.UTF_8, Files.exists(logFile) ? java.nio.file.StandardOpenOption.APPEND : java.nio.file.StandardOpenOption.CREATE); } catch (IOException ignored) { } }
     private void showError(String title, Exception exception) { appendLog(title + "：" + exception.getMessage()); JOptionPane.showMessageDialog(this, exception.getMessage(), title, JOptionPane.ERROR_MESSAGE); }
@@ -1069,8 +1201,13 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         private String name;
         private final int x, y;
         private int startDelayMs, intervalMs, clicks;
-        private ClickPoint(String name, int x, int y, int startDelayMs, int intervalMs, int clicks) { this.name = name; this.x = x; this.y = y; this.startDelayMs = startDelayMs; this.intervalMs = intervalMs; this.clicks = clicks; }
+        private PointActionType actionType;
+        private int wheelSteps;
+        private String hotkey;
+        private ClickPoint(String name, int x, int y, int startDelayMs, int intervalMs, int clicks) { this(name, x, y, startDelayMs, intervalMs, clicks, PointActionType.LEFT_CLICK, 1, ""); }
+        private ClickPoint(String name, int x, int y, int startDelayMs, int intervalMs, int clicks, PointActionType actionType, int wheelSteps, String hotkey) { this.name = name; this.x = x; this.y = y; this.startDelayMs = startDelayMs; this.intervalMs = intervalMs; this.clicks = clicks; this.actionType = actionType; this.wheelSteps = wheelSteps; this.hotkey = hotkey; }
     }
+    private enum PointActionType { LEFT_CLICK, RIGHT_CLICK, WHEEL, HOTKEY }
     private class MacWindowControls extends JPanel {
         MacWindowControls() {
             super(new FlowLayout(FlowLayout.RIGHT, 7, 0));
@@ -1117,11 +1254,12 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
             return button;
         }
     }
-    private enum RecordedActionType { MOVE, PRESS, RELEASE }
+    private enum RecordedActionType { MOVE, PRESS, RELEASE, KEY_PRESS, KEY_RELEASE }
     private static class RecordedMouseAction {
         private final RecordedActionType type;
-        private final int x, y, button, delayMs;
-        private RecordedMouseAction(RecordedActionType type, int x, int y, int button, int delayMs) { this.type = type; this.x = x; this.y = y; this.button = button; this.delayMs = delayMs; }
+        private final int x, y, button, delayMs, keyCode;
+        private RecordedMouseAction(RecordedActionType type, int x, int y, int button, int delayMs) { this(type, x, y, button, delayMs, 0); }
+        private RecordedMouseAction(RecordedActionType type, int x, int y, int button, int delayMs, int keyCode) { this.type = type; this.x = x; this.y = y; this.button = button; this.delayMs = delayMs; this.keyCode = keyCode; }
     }
     private static class TrafficLightPanel extends JPanel {
         TrafficLightPanel() { setOpaque(false); setPreferredSize(new Dimension(58, 18)); }
@@ -1148,7 +1286,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         @Override protected void paintComponent(Graphics graphics) {
             Graphics2D g2 = (Graphics2D) graphics.create();
             g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
-            g2.setPaint(new GradientPaint(0, 0, new Color(236, 244, 255), getWidth(), getHeight(), new Color(244, 238, 255)));
+            g2.setColor(Color.WHITE);
             g2.fillRect(0, 0, getWidth(), getHeight());
             g2.dispose();
         }
