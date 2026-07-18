@@ -57,6 +57,7 @@ import java.awt.Rectangle;
 import java.awt.Robot;
 import java.awt.Toolkit;
 import java.awt.event.InputEvent;
+import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -72,6 +73,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Properties;
 import java.util.logging.Level;
@@ -575,7 +577,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         JComboBox<PointActionType> actionType = new JComboBox<>(PointActionType.values());
         actionType.setSelectedItem(point.actionType);
         JSpinner wheelSteps = spinner(point.wheelSteps, -100, 100, 1);
-        JTextField hotkey = new JTextField(point.hotkey, 18);
+        HotkeyCaptureField hotkey = new HotkeyCaptureField(point.hotkey);
         JSpinner startDelay = spinner(point.startDelayMs, 0, 60_000, 50);
         JSpinner interval = spinner(point.intervalMs, 10, 60_000, 10);
         JSpinner clicks = spinner(point.clicks, 1, 100_000, 1);
@@ -583,7 +585,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         addDialogRow(fields, 0, "点位名称", nameField, "");
         addDialogRow(fields, 1, "动作", actionType, "滚轮正数向上");
         addDialogRow(fields, 2, "滚轮步数", wheelSteps, "负数向下");
-        addDialogRow(fields, 3, "快捷键", hotkey, "例：CTRL+S");
+        addDialogRow(fields, 3, "快捷键", hotkey, "点击后直接按组合键");
         addDialogRow(fields, 4, "开始前延迟", startDelay, "毫秒");
         addDialogRow(fields, 5, "连续点击间隔", interval, "毫秒");
         addDialogRow(fields, 6, "此点位执行次数", clicks, "次");
@@ -593,7 +595,7 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
             point.name = name.isEmpty() ? "点位 " + (index + 1) : name;
             point.actionType = (PointActionType) actionType.getSelectedItem();
             point.wheelSteps = intValue(wheelSteps);
-            point.hotkey = hotkey.getText().trim();
+            point.hotkey = hotkey.getHotkey();
             point.startDelayMs = intValue(startDelay);
             point.intervalMs = intValue(interval);
             point.clicks = intValue(clicks);
@@ -626,11 +628,11 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         JLabel titleLabel = new JLabel(title);
         titleLabel.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 14));
         titleLabel.setForeground(TEXT);
-        RoundButton close = new RoundButton("关闭", new Color(142, 142, 147));
-        close.setPreferredSize(new Dimension(70, 28));
-        close.addActionListener(event -> dialog.dispose());
+        JPanel closeControl = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        closeControl.setOpaque(false);
+        closeControl.add(new MacCircleButton(new Color(255, 95, 86), "×", dialog::dispose));
         titleBar.add(titleLabel, BorderLayout.WEST);
-        titleBar.add(close, BorderLayout.EAST);
+        titleBar.add(closeControl, BorderLayout.EAST);
         root.add(titleBar, BorderLayout.NORTH);
         root.add(content, BorderLayout.CENTER);
         JPanel buttonBar = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
@@ -697,7 +699,11 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         JLabel titleLabel = new JLabel(title);
         titleLabel.setForeground(TEXT);
         titleLabel.setFont(new Font("Microsoft YaHei UI", Font.BOLD, 14));
-        titleBar.add(new TrafficLightPanel(), BorderLayout.WEST);
+        JPanel dialogControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 7, 0));
+        dialogControls.setOpaque(false);
+        dialogControls.add(new MacCircleButton(new Color(255, 95, 86), "×", dialog::dispose));
+        dialogControls.add(new MacCircleButton(new Color(255, 189, 46), "−", () -> { }));
+        titleBar.add(dialogControls, BorderLayout.WEST);
         titleBar.add(titleLabel, BorderLayout.CENTER);
         shell.add(titleBar, BorderLayout.NORTH);
         shell.add(content, BorderLayout.CENTER);
@@ -1206,6 +1212,38 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         private String hotkey;
         private ClickPoint(String name, int x, int y, int startDelayMs, int intervalMs, int clicks) { this(name, x, y, startDelayMs, intervalMs, clicks, PointActionType.LEFT_CLICK, 1, ""); }
         private ClickPoint(String name, int x, int y, int startDelayMs, int intervalMs, int clicks, PointActionType actionType, int wheelSteps, String hotkey) { this.name = name; this.x = x; this.y = y; this.startDelayMs = startDelayMs; this.intervalMs = intervalMs; this.clicks = clicks; this.actionType = actionType; this.wheelSteps = wheelSteps; this.hotkey = hotkey; }
+    }
+    private static class HotkeyCaptureField extends JTextField {
+        private final LinkedHashSet<Integer> pressedKeys = new LinkedHashSet<>();
+        private String hotkey;
+        HotkeyCaptureField(String hotkey) {
+            super(hotkey, 18);
+            this.hotkey = hotkey == null ? "" : hotkey;
+            setToolTipText("点击后按下组合键，例如按住 Ctrl 再按 C");
+            addKeyListener(new KeyAdapter() {
+                @Override public void keyPressed(KeyEvent event) {
+                    event.consume();
+                    pressedKeys.add(event.getKeyCode());
+                    if (!isModifier(event.getKeyCode())) {
+                        HotkeyCaptureField.this.hotkey = formatHotkey(pressedKeys);
+                        setText(HotkeyCaptureField.this.hotkey);
+                    }
+                }
+                @Override public void keyReleased(KeyEvent event) { pressedKeys.remove(event.getKeyCode()); }
+                @Override public void keyTyped(KeyEvent event) { event.consume(); }
+            });
+        }
+        String getHotkey() { return hotkey; }
+        private boolean isModifier(int keyCode) { return keyCode == KeyEvent.VK_CONTROL || keyCode == KeyEvent.VK_ALT || keyCode == KeyEvent.VK_SHIFT || keyCode == KeyEvent.VK_WINDOWS || keyCode == KeyEvent.VK_META; }
+        private String formatHotkey(LinkedHashSet<Integer> keys) {
+            List<String> labels = new ArrayList<>();
+            if (keys.contains(KeyEvent.VK_CONTROL)) labels.add("Ctrl");
+            if (keys.contains(KeyEvent.VK_ALT)) labels.add("Alt");
+            if (keys.contains(KeyEvent.VK_SHIFT)) labels.add("Shift");
+            if (keys.contains(KeyEvent.VK_WINDOWS) || keys.contains(KeyEvent.VK_META)) labels.add("Win");
+            for (int key : keys) if (!isModifier(key)) labels.add(KeyEvent.getKeyText(key));
+            return String.join("+", labels);
+        }
     }
     private enum PointActionType { LEFT_CLICK, RIGHT_CLICK, WHEEL, HOTKEY }
     private class MacWindowControls extends JPanel {
