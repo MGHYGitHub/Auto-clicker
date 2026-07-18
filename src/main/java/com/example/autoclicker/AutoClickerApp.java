@@ -575,10 +575,12 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         RoundButton cancel = new RoundButton("取消", new Color(142, 142, 147));
         JOptionPane pane = new JOptionPane(content, JOptionPane.PLAIN_MESSAGE, JOptionPane.DEFAULT_OPTION, null, new Object[]{save, cancel}, save);
         pane.setBackground(new Color(255, 255, 255, 238));
-        JDialog dialog = pane.createDialog(this, title);
+        JDialog dialog = new JDialog(this, title, true);
         dialog.setUndecorated(true);
         dialog.setResizable(false);
-        dialog.getContentPane().setBackground(new Color(255, 255, 255, 238));
+        dialog.setContentPane(pane);
+        dialog.pack();
+        dialog.setLocationRelativeTo(this);
         dialog.setVisible(true);
         return pane.getValue() == save ? JOptionPane.OK_OPTION : JOptionPane.CANCEL_OPTION;
     }
@@ -1110,14 +1112,13 @@ public class AutoClickerApp extends JFrame implements NativeKeyListener, NativeM
         }
     }
     private static class GlassBackgroundPanel extends JPanel {
-        GlassBackgroundPanel() { setOpaque(false); }
+        GlassBackgroundPanel() { setOpaque(true); }
         @Override protected void paintComponent(Graphics graphics) {
             Graphics2D g2 = (Graphics2D) graphics.create();
             g2.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
             g2.setPaint(new GradientPaint(0, 0, new Color(236, 244, 255), getWidth(), getHeight(), new Color(244, 238, 255)));
             g2.fillRect(0, 0, getWidth(), getHeight());
             g2.dispose();
-            super.paintComponent(graphics);
         }
     }
     private static class RoundPanel extends JPanel {
