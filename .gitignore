@@ -3,3 +3,7 @@ target/
 *.iml
 *.class
 out/
+
+dist/
+release/
+installer*/
